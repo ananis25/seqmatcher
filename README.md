@@ -4,7 +4,9 @@
 [![Changelog](https://img.shields.io/github/v/release/ananis25/seqmatcher?include_prereleases&label=changelog)](https://github.com/ananis25/seqmatcher/releases)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/ananis25/seqmatcher/blob/main/LICENSE)
 
-match and edit sequences of events
+`seqmatcher` is a python library that provides a DSL to match and edit sequences of events. Similar to how regular expressions help match patterns in text (which is a stream of characters), a collection of sequences (stream of events) can be analyzed similarly. 
+
+This is a total ripoff of the work done [here](https://observablehq.com/@mikpanko/sequence-pattern-matching?collection=@mikpanko/sequences).
 
 ## Installation
 
