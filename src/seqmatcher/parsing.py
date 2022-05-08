@@ -39,9 +39,7 @@ def prop():
     op_str = yield p.regex(r"=|!=|<=|>=|<|>").desc("operator")
     val_str = yield p.regex(r"@?[\w_]+").sep_by(p.string("|"), min=1)
 
-    if op_str not in ("=", "!="):
-        val_str = val_str[0]
-    return Property(cast_operator(op_str), key_str, val_str, [], [])
+    return Property(cast_operator(op_str), key_str, val_str)
 
 
 @generate("event")
@@ -66,7 +64,7 @@ def event():
 
     yield p.string("(")
     # read the custom name for the event
-    custom_name = yield p.regex(r"@\w+").desc("custom_name").optional()
+    custom_name = yield p.regex(r"[@\w]+").desc("custom_name").optional()
     if custom_name is not None:
         evt.custom_name = custom_name
 
@@ -75,9 +73,9 @@ def event():
     names = yield (p.string(":") >> p.regex(r"@?\w+").desc("type")).sep_by(
         p.string("|")
     )
-    evt.flag_exclude_names = exclude is not None
-    for name in names:
-        evt.list_names.append(name)
+    evt.properties.append(
+        Property(Operator.EQ if exclude is None else Operator.NE, "_event_name", names)
+    )
 
     # read the properties to match
     tmp = yield p.string("{").optional()
@@ -136,3 +134,93 @@ def pattern():
         yield p.string("}}")
 
     return pat
+
+
+def parse_match_pattern(pattern_str: str) -> SeqPattern:
+    """Parse a sequence pattern string into a SeqPattern object."""
+    pat: SeqPattern = pattern.parse(pattern_str)
+
+    # fill in the cross references made across events
+    for i, evt in enumerate(pat.events):
+        if evt.custom_name is not None:
+            assert evt.custom_name.startswith(
+                "@"
+            ), f"custom name for events must start with @: {evt.custom_name}"
+            assert (
+                evt.custom_name not in pat.custom_names
+            ), f"duplicate assignment for custom name: {evt.custom_name}"
+            pat.custom_names[evt.custom_name] = i
+        for _prop in evt.properties:
+            keep_vals = []
+            for _val in _prop.value:
+                if _val.startswith("@"):
+                    if _val not in pat.custom_names:
+                        raise Exception(
+                            f"Undefined reference found in values for property: {_val}"
+                        )
+                    _prop.value_refs.append(pat.custom_names[_val])
+                else:
+                    keep_vals.append(_val)
+            _prop.value = keep_vals
+    return pat
+
+
+def parse_replace_pattern(
+    repl_pattern_str: str, match_pattern: SeqPattern
+) -> ReplSeqPattern:
+    """Parse a replace pattern string into a ReplacePattern object."""
+    repl_pattern: SeqPattern = pattern.parse(repl_pattern_str)
+
+    events: list[ReplEvtPattern] = []
+    # match cross references with those defined in the match pattern
+    for i, evt in enumerate(repl_pattern.events):
+        if evt.custom_name is not None:
+            _copy_all = False
+            _copy_reverse = False
+            if evt.custom_name.startswith("ALL@"):
+                pick_name = evt.custom_name[3:]
+                _copy_all = True
+            elif evt.custom_name.startswith("REVERSE@"):
+                pick_name = evt.custom_name[7:]
+                _copy_reverse = True
+            elif evt.custom_name.startswith("@"):
+                pick_name = evt.custom_name
+            else:
+                raise Exception(
+                    f"invalid custom name reference in the replace pattern: {evt.custom_name}"
+                )
+
+            assert (
+                pick_name in match_pattern.custom_names
+            ), f"undefined custom name reference in the replace pattern: {pick_name}"
+            events.append(
+                ReplEvtPattern(
+                    ref_custom_name=match_pattern.custom_names[pick_name],
+                    copy_ref_all=_copy_all,
+                    copy_ref_reverse=_copy_reverse,
+                )
+            )
+        else:
+            # copy over all the properties specified
+            properties = []
+            for _prop in evt.properties:
+                assert (
+                    _prop.op == Operator.EQ and len(_prop.value) == 1
+                ), "replace pattern properties only specify assignment"
+
+                new_prop = Property(op=Operator.EQ, key=_prop.key)
+                for _val in _prop.value:
+                    if _val.startswith("@"):
+                        if _val not in match_pattern.custom_names:
+                            raise Exception(
+                                f"Undefined reference found as value for property: {_val}"
+                            )
+                        new_prop.value_refs.append(match_pattern.custom_names[_val])
+                    else:
+                        new_prop.value.append(_val)
+                properties.append(new_prop)
+            events.append(ReplEvtPattern(properties=properties))
+
+    return ReplSeqPattern(
+        events=events, properties=repl_pattern.properties, code=repl_pattern.code
+    )

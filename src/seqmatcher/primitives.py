@@ -6,7 +6,16 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional, Union, Any, Protocol, runtime_checkable, Iterable
 
-__all__ = ["Operator", "cast_operator", "Property", "EvtPattern", "SeqPattern", "Rule"]
+__all__ = [
+    "Operator",
+    "cast_operator",
+    "Property",
+    "EvtPattern",
+    "SeqPattern",
+    "ReplEvtPattern",
+    "ReplSeqPattern",
+    "Rule",
+]
 
 
 class Operator(Enum):
@@ -39,9 +48,8 @@ def cast_operator(op: str) -> Operator:
 class Property:
     op: "Operator"
     key: str
-    value: Union[Any, list[Any]]
-    value_refs: list[int]
-    value_refs_idx: list[int]
+    value: list[Any] = field(default_factory=list)
+    value_refs: list[int] = field(default_factory=list)
 
 
 @dataclass
@@ -49,8 +57,15 @@ class EvtPattern:
     custom_name: Optional[str] = None
     min_count: int = 0
     max_count: Optional[int] = None
-    flag_exclude_names: bool = False
-    list_names: list[str] = field(default_factory=list)
+    properties: list["Property"] = field(default_factory=list)
+    code: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ReplEvtPattern:
+    ref_custom_name: Optional[int] = None
+    copy_ref_all: bool = False
+    copy_ref_reverse: bool = False
     properties: list["Property"] = field(default_factory=list)
     code: list[str] = field(default_factory=list)
 
@@ -63,7 +78,15 @@ class SeqPattern:
     match_seq_end: bool = False
     idx_start_event: Optional[int] = None
     idx_end_event: Optional[int] = None
+    custom_names: dict[str, int] = field(default_factory=dict)
     events: list[EvtPattern] = field(default_factory=list)
+    properties: list["Property"] = field(default_factory=list)
+    code: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ReplSeqPattern:
+    events: list[ReplEvtPattern] = field(default_factory=list)
     properties: list["Property"] = field(default_factory=list)
     code: list[str] = field(default_factory=list)
 
