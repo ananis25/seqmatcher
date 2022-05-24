@@ -2,13 +2,12 @@
 This module implements the matching routine. 
 """
 
-import numpy as np
 from typing import Union, Any, Optional, TypedDict, Iterable
 from .primitives import *
 
 
 class Event(TypedDict):
-    _event_name: str
+    _eventName: str
 
 
 class Sequence(TypedDict):
@@ -21,28 +20,6 @@ class MatchedSubSeq(TypedDict):
     evt_counts: list[int]
     start: int
     end_excl: int
-
-
-class CacheMatch:
-    values: np.ndarray
-
-    def __init__(self, sz_pat: int, sz_events: int) -> None:
-        self.values = np.full((sz_pat, sz_events), fill_value=-1, dtype=np.int8)
-
-    def set(self, idx_pat: int, idx_event: int, value: bool) -> None:
-        self.values[idx_pat, idx_event] = 1 if value else 0
-
-    def get(self, idx_pat: int, idx_event: int) -> Optional[bool]:
-        v = self.values[idx_pat, idx_event]
-        if v == 1:
-            return True
-        elif v == 0:
-            return False
-        else:
-            return None
-
-    def reset(self):
-        self.values.fill(-1)
 
 
 def replace_pattern(
@@ -86,7 +63,7 @@ def replace_pattern(
                         evt = seq["events"][ref_index]
                         events.append(evt)
                 else:
-                    evt = Event(_event_name="noname")
+                    evt = Event(_eventName="noname")
                     for _prop in repl_evt.properties:
                         if len(_prop.value) > 0:
                             evt[_prop.key] = _prop.value[0]

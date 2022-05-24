@@ -74,7 +74,7 @@ def event():
         p.string("|")
     )
     evt.properties.append(
-        Property(Operator.EQ if exclude is None else Operator.NE, "_event_name", names)
+        Property(Operator.EQ if exclude is None else Operator.NE, "_eventName", names)
     )
 
     # read the properties to match
@@ -221,6 +221,4 @@ def parse_replace_pattern(
                 properties.append(new_prop)
             events.append(ReplEvtPattern(properties=properties))
 
-    return ReplSeqPattern(
-        events=events, properties=repl_pattern.properties, code=repl_pattern.code
-    )
+    return ReplSeqPattern(events=events, properties=repl_pattern.properties)
