@@ -1,25 +1,61 @@
 """
 This module implements the matching routine. 
 """
-
+import numpy as np
 from typing import Union, Any, Optional, TypedDict, Iterable
 from .primitives import *
 
 
-class Event(TypedDict):
-    _eventName: str
-
-
-class Sequence(TypedDict):
-    events: list[Event]
-
-
 class MatchedSubSeq(TypedDict):
+    """Represents the output of matching a sequence against a pattern. It can be used
+    to extract the relevant subsequence from the full list of events.
+
+    Attributes:
+        seq_id: identifier for the sequence being matched
+        evt_indices: sequence index corresponding to each event in the pattern
+        evt_count: number of items matched to each event in the pattern
+        start: sequence index starting where the subsequence can be extracted. While the full pattern can
+            be longer, the extracted match might leave out part of the pattern
+        end_excl: sequence index ending until where the subsequence can be extracted
+    """
+
     seq_id: int
     evt_indices: list[int]
     evt_counts: list[int]
     start: int
     end_excl: int
+
+
+class CacheMatch:
+    """Use it to memoize if an event in the sequence pattern matches an event in the sequence.
+    For patterns with backreferences, naive memoization wouldn't make sense, so we don't use it.
+
+    Attributes:
+        values: 2D array of values, rows/columns correspond to pattern/sequence indices.
+        is_valid: indicates if memoization can be used
+    """
+
+    values: np.ndarray
+    is_valid: bool = False
+
+    def __init__(self, sz_pat: int, sz_events: int, is_valid: bool) -> None:
+        self.values = np.full((sz_pat, sz_events), fill_value=-1, dtype=np.int8)
+        self.is_valid = is_valid
+
+    def set(self, idx_pat: int, idx_event: int, value: bool) -> None:
+        self.values[idx_pat, idx_event] = 1 if value else 0
+
+    def get(self, idx_pat: int, idx_event: int) -> Union[None, bool]:
+        val = self.values[idx_pat, idx_event]
+        if val == 1:
+            return True
+        elif val == 0:
+            return False
+        else:
+            return None
+
+    def reset(self):
+        self.values.fill(-1)
 
 
 def replace_pattern(
@@ -103,8 +139,16 @@ def extract_pattern(pat: SeqPattern, sequences: list[Sequence]) -> list[Sequence
 def match_pattern(pat: SeqPattern, sequences: list[Sequence]) -> list[MatchedSubSeq]:
     matched_sequences: list[MatchedSubSeq] = []
 
+    has_backrefs = any(
+        any(len(prop.value_refs) > 0 for prop in evt.properties)
+        for evt in pat.event_patterns
+    )
+    cache = CacheMatch(len(pat.event_patterns), 500, not has_backrefs)
+
     for seq_id, seq in enumerate(sequences):
+        cache.reset()
         matched = True
+
         # filter by property matching
         for prop in pat.properties:
             if not match_prop(prop, seq):  # type:ignore
@@ -114,12 +158,12 @@ def match_pattern(pat: SeqPattern, sequences: list[Sequence]) -> list[MatchedSub
             continue
 
         pos = 0
-        start_before = 1 if pat.match_seq_start else len(pat.events)
+        start_before = 1 if pat.match_seq_start else len(pat.event_patterns)
         while pos < start_before:
             match_indices: list[int] = []
             match_counts: list[int] = []
             if match_sequence_here(
-                pat, 0, seq["events"], pos, match_indices, match_counts
+                pat, 0, seq["events"], pos, match_indices, match_counts, cache
             ):
                 matched_seq = MatchedSubSeq(
                     seq_id=seq_id, evt_indices=[], evt_counts=[], start=0, end_excl=0
@@ -158,15 +202,16 @@ def match_sequence_here(
     events_pos: int,
     match_indices: list[int],
     match_counts: list[int],
+    cache: CacheMatch,
 ):
     """Match the events in the sequence starting at the given position of the pattern"""
-    evt_p = pat.events[pat_pos]
+    evt_p = pat.event_patterns[pat_pos]
     for pos in range(events_pos, events_pos + evt_p.min_count):
         # more events to match than present in the sequence
         if pos >= len(events):
             return False
         if not match_event(
-            pat.events, pat_pos, events, pos, match_indices, match_counts
+            pat.event_patterns, pat_pos, events, pos, match_indices, match_counts, cache
         ):
             return False
     match_indices.append(events_pos)
@@ -177,18 +222,24 @@ def match_sequence_here(
         pos_limit = min(pos_limit, events_pos + evt_p.max_count)
 
     # check if the pattern has more events left to match
-    if pat_pos < len(pat.events) - 1:
+    if pat_pos < len(pat.event_patterns) - 1:
         for pos in range(events_pos + evt_p.min_count, pos_limit):
             # see if the rest of the pattern matches rest of the sequence
             # if it does, we have a match since we already matched min_count copies of current event
             if match_sequence_here(
-                pat, pat_pos + 1, events, pos, match_indices, match_counts
+                pat, pat_pos + 1, events, pos, match_indices, match_counts, cache
             ):
                 return True
 
             # we have some leeway to match more of the current event
             if match_event(
-                pat.events, pat_pos, events, pos, match_indices, match_counts
+                pat.event_patterns,
+                pat_pos,
+                events,
+                pos,
+                match_indices,
+                match_counts,
+                cache,
             ):
                 match_counts[-1] += 1
             else:
@@ -201,7 +252,7 @@ def match_sequence_here(
         if pos < len(events):
             # the sequence has more events to match to
             if match_sequence_here(
-                pat, pat_pos + 1, events, pos, match_indices, match_counts
+                pat, pat_pos + 1, events, pos, match_indices, match_counts, cache
             ):
                 return True
             else:
@@ -220,7 +271,13 @@ def match_sequence_here(
         pos = events_pos + evt_p.min_count
         while pos < pos_limit:
             if not match_event(
-                pat.events, pat_pos, events, pos, match_indices, match_counts
+                pat.event_patterns,
+                pat_pos,
+                events,
+                pos,
+                match_indices,
+                match_counts,
+                cache,
             ):
                 break
             else:
@@ -243,11 +300,19 @@ def match_event(
     seq_pos: int,
     match_indices: list[int],
     match_counts: list[int],
+    cache: CacheMatch,
 ) -> bool:
     """Check whether the event in the sequence matches the event specified in the pattern."""
+    if cache.is_valid:
+        cached_val = cache.get(pat_pos, seq_pos)
+        if cached_val == 0:
+            return False
+        elif cached_val == 1:
+            return True
+
+    matched = True
     pat_event = pat_events[pat_pos]
     seq_event = seq_events[seq_pos]
-
     for prop in pat_event.properties:
         lhs = seq_event[prop.key]
         rhs = []
@@ -257,8 +322,13 @@ def match_event(
             ref_event = seq_events[match_indices[idx]]
             rhs.append(ref_event[prop.key])
         if not match_prop(prop.op, lhs, rhs):
-            return False
-    return True
+            matched = False
+            break
+
+    if cache.is_valid:
+        cache.set(pat_pos, seq_pos, matched)
+
+    return matched
 
 
 def match_prop(op, lhs, rhs) -> bool:

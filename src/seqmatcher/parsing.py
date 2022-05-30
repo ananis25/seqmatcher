@@ -39,7 +39,7 @@ def prop():
     op_str = yield p.regex(r"=|!=|<=|>=|<|>").desc("operator")
     val_str = yield p.regex(r"@?[\w_]+").sep_by(p.string("|"), min=1)
 
-    return Property(cast_operator(op_str), key_str, val_str)
+    return Property(Operator(op_str), key_str, val_str)
 
 
 @generate("event")
@@ -73,9 +73,9 @@ def event():
     names = yield (p.string(":") >> p.regex(r"@?\w+").desc("type")).sep_by(
         p.string("|")
     )
-    evt.properties.append(
-        Property(Operator.EQ if exclude is None else Operator.NE, "_eventName", names)
-    )
+    if len(names) > 0:
+        _op = Operator.EQ if exclude is None else Operator.NE
+        evt.properties.append(Property(_op, "_eventName", names))
 
     # read the properties to match
     tmp = yield p.string("{").optional()
@@ -89,10 +89,10 @@ def event():
 
 
 @generate("pattern")
-def pattern():
+def seq_pattern():
     pat = SeqPattern()
 
-    tmp = yield p.string("|").optional()
+    tmp = yield p.string("|-").optional()
     if tmp is not None:
         pat.match_seq_start = True
 
@@ -105,15 +105,15 @@ def pattern():
         if tok == "^":
             if pat.idx_start_event is not None:
                 raise Exception("multiple start event markers in the pattern")
-            pat.idx_start_event = len(pat.events)
+            pat.idx_start_event = len(pat.event_patterns)
         elif tok == "$":
             if pat.idx_end_event is not None:
                 raise Exception("multiple end event markers in the pattern")
-            pat.idx_end_event = len(pat.events) - 1
+            pat.idx_end_event = len(pat.event_patterns) - 1
         else:
-            pat.events.append(tok)
+            pat.event_patterns.append(tok)
 
-    tmp = yield p.string("|").optional()
+    tmp = yield p.string("-|").optional()
     if tmp is not None:
         pat.match_seq_end = True
 
@@ -138,10 +138,10 @@ def pattern():
 
 def parse_match_pattern(pattern_str: str) -> SeqPattern:
     """Parse a sequence pattern string into a SeqPattern object."""
-    pat: SeqPattern = pattern.parse(pattern_str)
+    pat: SeqPattern = seq_pattern.parse(pattern_str)
 
     # fill in the cross references made across events
-    for i, evt in enumerate(pat.events):
+    for i, evt in enumerate(pat.event_patterns):
         if evt.custom_name is not None:
             assert evt.custom_name.startswith(
                 "@"
@@ -162,6 +162,8 @@ def parse_match_pattern(pattern_str: str) -> SeqPattern:
                 else:
                     keep_vals.append(_val)
             _prop.value = keep_vals
+
+    pat.pattern_str = pattern_str
     return pat
 
 
@@ -169,11 +171,11 @@ def parse_replace_pattern(
     repl_pattern_str: str, match_pattern: SeqPattern
 ) -> ReplSeqPattern:
     """Parse a replace pattern string into a ReplacePattern object."""
-    repl_pattern: SeqPattern = pattern.parse(repl_pattern_str)
+    repl_pattern: SeqPattern = seq_pattern.parse(repl_pattern_str)
 
     events: list[ReplEvtPattern] = []
     # match cross references with those defined in the match pattern
-    for i, evt in enumerate(repl_pattern.events):
+    for i, evt in enumerate(repl_pattern.event_patterns):
         if evt.custom_name is not None:
             _copy_all = False
             _copy_reverse = False

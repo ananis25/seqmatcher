@@ -3,49 +3,33 @@ Data structures to represent a sequence matching instruction. The user input is
 parsed into one of these before executing it. 
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, is_dataclass
 from enum import Enum
-from typing import Optional, Any, Protocol, runtime_checkable, Iterable
+from typing import Optional, Any, Protocol, TypedDict, runtime_checkable, Iterable
 
 __all__ = [
     "Operator",
-    "cast_operator",
     "Property",
     "EvtPattern",
     "SeqPattern",
     "ReplEvtPattern",
     "ReplSeqPattern",
     "Rule",
+    "Event",
+    "Sequence",
+    "repr_dataclass",
 ]
 
 
 class Operator(Enum):
     """filter expressions only permit one of these operators"""
 
-    EQ = 1
-    NE = 2
-    LT = 3
-    LE = 4
-    GT = 5
-    GE = 6
-
-
-def cast_operator(op: str) -> Operator:
-    """parse the text substring into an Operator"""
-    if op == "==":
-        return Operator.EQ
-    elif op == "!=":
-        return Operator.NE
-    elif op == "<":
-        return Operator.LT
-    elif op == "<=":
-        return Operator.LE
-    elif op == ">":
-        return Operator.GT
-    elif op == ">=":
-        return Operator.GE
-    else:
-        raise ValueError(f"Unknown operator: {op}")
+    EQ = "="
+    NE = "!="
+    LT = "<"
+    LE = "<="
+    GT = ">"
+    GE = ">="
 
 
 @dataclass
@@ -78,6 +62,9 @@ class EvtPattern:
     max_count: Optional[int] = None
     properties: list["Property"] = field(default_factory=list)
 
+    def __repr__(self) -> str:
+        return repr_dataclass(self)
+
 
 @dataclass
 class ReplEvtPattern:
@@ -97,6 +84,9 @@ class ReplEvtPattern:
     copy_ref_all: bool = False
     copy_ref_reverse: bool = False
     properties: list["Property"] = field(default_factory=list)
+
+    def __repr__(self) -> str:
+        return repr_dataclass(self)
 
 
 @dataclass
@@ -121,6 +111,7 @@ class SeqPattern:
         properties: list of properties to match
     """
 
+    pattern_str: str = ""
     match_all: bool = True
     allow_overlaps: bool = False
     match_seq_start: bool = False
@@ -128,8 +119,11 @@ class SeqPattern:
     idx_start_event: Optional[int] = None
     idx_end_event: Optional[int] = None
     custom_names: dict[str, int] = field(default_factory=dict)
-    events: list[EvtPattern] = field(default_factory=list)
+    event_patterns: list[EvtPattern] = field(default_factory=list)
     properties: list["Property"] = field(default_factory=list)
+
+    def __repr__(self) -> str:
+        return repr_dataclass(self)
 
 
 @dataclass
@@ -139,60 +133,122 @@ class ReplSeqPattern:
     events: list[ReplEvtPattern] = field(default_factory=list)
     properties: list["Property"] = field(default_factory=list)
 
+    def __repr__(self) -> str:
+        return repr_dataclass(self)
+
+
+class Event(TypedDict):
+    _eventName: str
+
+
+class Sequence(TypedDict):
+    events: list[Event]
+
 
 @runtime_checkable
 class Rule(Protocol):
     """Each step of the sequence matching pipeline is specified as a `Rule` that takes a list of
-    sequences as an input, and can be one of:
-    - regular: matches each sequence against the `SeqPattern`, returns the list of all matched subsequences.
-    - replacement: matches each sequence against the `SeqPattern`, and returns the list of all matched subsequences
-        edited per the `ReplSeqPattern`.
-    - not: matches each sequence against the `SeqPattern`, returns all sequences that didn't have a match.
-    - or: matches against a list of `SeqPattern` objects, collects all the matched subsequences from each of them,
-        and returns a union over them.
+    sequences as an input, and returns another list of sequences as output.
     """
 
-    def execute(self, sequences: Iterable[Any]) -> Iterable[Any]:
-        ...
+    ...
 
 
 class RuleRegular:
+    """Matches each sequence against the `SeqPattern`, returns the list of all matched subsequences."""
+
     match_pattern: SeqPattern
 
     def __init__(self, pattern: SeqPattern):
         self.match_pattern = pattern
-
-    def execute(self, sequences: Iterable[Any]) -> Iterable[Any]:
-        return sequences
 
 
 class RuleReplace:
-    match_pattern: SeqPattern
-    replace_pattern: SeqPattern
+    """Matches each sequence against the `SeqPattern`, and returns the list of all
+    matched subsequences edited per the `ReplSeqPattern`.
+    """
 
-    def __init__(self, pattern: SeqPattern, replace_pattern: SeqPattern):
+    match_pattern: SeqPattern
+    replace_pattern: ReplSeqPattern
+
+    def __init__(self, pattern: SeqPattern, replace_pattern: ReplSeqPattern):
         self.match_pattern = pattern
         self.replace_pattern = replace_pattern
 
-    def execute(self, sequences: Iterable[Any]) -> Iterable[Any]:
-        return sequences
-
 
 class RuleNot:
+    """Matches each sequence against the `SeqPattern`, returns all sequences that didn't have a match."""
+
     match_pattern: SeqPattern
 
     def __init__(self, pattern: SeqPattern):
         self.match_pattern = pattern
 
-    def execute(self, sequences: Iterable[Any]) -> Iterable[Any]:
-        return sequences
-
 
 class RuleOr:
+    """Matches against a list of `SeqPattern` objects, collects all the matched
+    subsequences from each of them, and returns a union over them.
+    """
+
     list_match_patterns: list[SeqPattern]
 
     def __init__(self, patterns: list[SeqPattern]):
         self.list_match_patterns = patterns
 
-    def execute(self, sequences: Iterable[Any]) -> Iterable[Any]:
-        return sequences
+
+# -----------------------------------------------------------
+# utility routines
+# -----------------------------------------------------------
+
+
+def repr_dataclass(obj, indent=2, _indents=0) -> str:
+    """Pretty print a dataclass.
+
+    credits: https://stackoverflow.com/a/66809229/10450004
+    """
+    if isinstance(obj, str):
+        return f"'{obj}'"
+
+    if not is_dataclass(obj) and not isinstance(obj, (dict, list, tuple)):
+        return str(obj)
+
+    this_indent = indent * _indents * " "
+    next_indent = indent * (_indents + 1) * " "
+    start = f"{type(obj).__name__}("
+    end = ")"
+
+    if is_dataclass(obj):
+        body = "\n".join(
+            f"{next_indent}{field.name}="
+            f"{repr_dataclass(getattr(obj, field.name), indent, _indents + 1)},"
+            for field in fields(obj)
+        )
+
+    elif isinstance(obj, dict):
+        start, end = "{}"
+        if len(obj) > 0:
+            body = "\n".join(
+                f"{next_indent}{repr_dataclass(key, indent, _indents + 1)}: "
+                f"{repr_dataclass(value, indent, _indents + 1)},"
+                for key, value in obj.items()
+            )
+        else:
+            body = ""
+
+    else:
+        if isinstance(obj, list):
+            start, end = "[]"
+        elif isinstance(obj, tuple):
+            start, end = "()"
+        if len(obj) > 0:
+            body = "\n".join(
+                f"{next_indent}{repr_dataclass(item, indent, _indents + 1)},"
+                for item in obj
+            )
+        else:
+            body = ""
+
+    if body == "":
+        return f"{start}{end}"
+    else:
+        return f"{start}\n{body}\n{this_indent}{end}"
