@@ -3,7 +3,7 @@ This module implements the matching routine, by JIT compiling the code
 for each input separately using Numba. 
 """
 
-from typing import cast, Callable
+from typing import Callable
 
 import numpy as np
 import numba as nb
@@ -11,7 +11,7 @@ import awkward as ak
 from numba.typed import List
 
 from .primitives import *
-from .codegen import add_jit_decorator, dump_code, make_ast, pattern_match_fns
+from . import codegen as cg
 
 
 @nb.experimental.jitclass
@@ -49,7 +49,9 @@ class PatternInfo:
         self.allow_overlaps = allow_overlaps
 
 
-def match_pattern(pat: SeqPattern, sequences: ak.Array, jit: bool = True) -> ak.Array:
+def match_pattern(
+    pat: SeqPattern, sequences: ak.Array, debug_mode: bool = False
+) -> ak.Array:
     pat_info = PatternInfo(
         len(pat.event_patterns),
         pat.idx_start_event if pat.idx_start_event else -1,
@@ -62,26 +64,29 @@ def match_pattern(pat: SeqPattern, sequences: ak.Array, jit: bool = True) -> ak.
         pat.allow_overlaps,
     )
 
-    # assemble code to pattern match
-    entry_fn = _match_pattern
-    list_fns = pattern_match_fns(pat)
-    list_fns.append(make_ast(match_sequence_here))  # type:ignore
-    if jit:
-        for fn in list_fns:
-            add_jit_decorator(fn)
-        entry_fn = nb.njit(entry_fn)
+    if debug_mode:
+        cg.clear_cache()
+    # check if code exists as a cached file, else generate and store it
+    if not cg.present_in_cache(pat.pattern_str):
+        list_fns = cg.generate_match_fns(pat)
+        list_fns.append(cg.make_ast(match_sequence_here))  # type: ignore
 
-    code_str = "\n\n".join(dump_code(f) for f in list_fns)
-    code_str += "\n\n" + dump_code(entry_fn)
+        code_str = ""
+        for _imp in (
+            "import numba as nb",
+            "import numpy as np",
+            "import awkward as ak",
+        ):
+            code_str += _imp + "\n"
+        for _func in list_fns:
+            code_str += "\n" + cg.ast_to_code(_func) + "\n"
+        cg.write_to_cache(pat.pattern_str, code_str)
 
-    ctx = {}
-    for val in ("ak", "nb", "np", "PatternInfo"):
-        ctx[val] = globals()[val]
-    exec(code_str, ctx)
-
-    res = entry_fn(
-        pat_info, sequences, ctx["match_seq"], ctx["match_sequence_here"]
+    jit_mod = cg.import_from_cache(pat.pattern_str)
+    res = _match_pattern(
+        pat_info, sequences, jit_mod.match_seq, jit_mod.match_sequence_here
     )  # type: tuple[list[np.ndarray], ...]
+
     list_match_seq_ids, list_match_indices, list_match_counts = res
     match_seq_ids = np.concatenate(list_match_seq_ids)
     match_indices = np.concatenate(list_match_indices)
@@ -98,6 +103,7 @@ def match_pattern(pat: SeqPattern, sequences: ak.Array, jit: bool = True) -> ak.
     )
 
 
+@nb.jit(nopython=True)
 def _match_pattern(
     pat: PatternInfo,
     sequences: ak.Array,
@@ -105,9 +111,7 @@ def _match_pattern(
     match_seq_here: Callable[..., bool],
 ) -> tuple[list[np.ndarray], ...]:
     """Match the pattern against the sequences"""
-
     num_sequences = len(sequences)
-    max_seq_length = ak.max(ak.num(sequences["events"]))
 
     # List of numpy arrays to output.
     # A cleaner option would be to output a list of structs instead but we want to keep allocations to
@@ -130,7 +134,7 @@ def _match_pattern(
         )
 
     match_seq_ids, match_indices, match_counts = _gen_arrays()
-    idx_match_arrays = 0
+    out_idx = 0  # index into the current set of match arrays, resets each time we run out of space
 
     for seq_id in range(num_sequences):
         seq = sequences[seq_id]
@@ -143,31 +147,43 @@ def _match_pattern(
 
         pos = 0
         start_before = 1 if pat.match_seq_start else pat.length
+        # NOTE: MAKE SURE THE LOOP VARIABLE IS INCREMENTED
         while pos < start_before:
-            i = idx_match_arrays  # save characters
-            if match_seq_here(pat, 0, events, pos, match_indices[i], match_counts[i]):
-                match_seq_ids[i] = seq_id
-                # conclude if we only want to match the first occurrence
-                if not pat.match_all:
-                    break
-
+            if match_seq_here(
+                pat,
+                0,
+                events,
+                pos,
+                match_indices[out_idx],
+                match_counts[out_idx],
+            ):
                 if pat.allow_overlaps:
                     # start matching from the next event in the sequence
                     pos += 1
-                else:
+                elif pat.idx_end > 0:
                     # start matching after the current match ends
-                    if pat.idx_end > 0:
-                        pos = (
-                            match_indices[i][pat.idx_end] + match_counts[i][pat.idx_end]
-                        )
-                    else:
-                        pos = num_events
+                    pos = (
+                        match_indices[out_idx][pat.idx_end]
+                        + match_counts[out_idx][pat.idx_end]
+                    )
+                else:
+                    # subsequences go until the end by default
+                    pos = num_events
 
-                idx_match_arrays += 1
-                if idx_match_arrays == num_sequences:
-                    # create more space for new outputs
+                # fill in the output arrays
+
+                # match_indices and match_counts arrays were already mutated while matching
+                match_seq_ids[out_idx] = seq_id
+                # update the running output index
+                out_idx += 1
+                # create more space if needed
+                if out_idx == num_sequences:
                     match_seq_ids, match_indices, match_counts = _gen_arrays()
-                    idx_match_arrays = 0
+                    out_idx = 0
+
+                # conclude if we need to match only the first occurrence
+                if not pat.match_all:
+                    break
 
             else:
                 pos += 1
@@ -175,14 +191,15 @@ def _match_pattern(
     return (list_match_seq_ids, list_match_indices, list_match_counts)  # type: ignore
 
 
+@nb.jit(nopython=True, cache=True)
 def match_sequence_here(
-    pat: PatternInfo,
-    pat_pos: int,
-    events: ak.Array,
-    events_pos: int,
-    cut_match_indices: np.ndarray,
-    cut_match_counts: np.ndarray,
-) -> bool:
+    pat: "PatternInfo",
+    pat_pos: "int",
+    events: "ak.Array",
+    events_pos: "int",
+    cut_match_indices: "np.ndarray",
+    cut_match_counts: "np.ndarray",
+) -> "bool":
     """Match the events in the sequence starting at the given position of the pattern"""
 
     min_to_match = pat.event_min_counts[pat_pos]
@@ -190,12 +207,14 @@ def match_sequence_here(
     num_events = len(events)
 
     pos = events_pos
+    # NOTE: MAKE SURE THE LOOP VARIABLE IS INCREMENTED
     while pos < events_pos + min_to_match:
         # more events to match than present in the sequence
         if pos >= num_events:
             return False
-        if not match_event(events[pos], pat_pos):  # type: ignore
+        if not match_event(pat_pos, events, pos, cut_match_indices):  # type: ignore
             return False
+        pos += 1
     cut_match_indices[pat_pos] = events_pos
     cut_match_counts[pat_pos] = min_to_match
 
@@ -206,6 +225,7 @@ def match_sequence_here(
     # check if the pattern has more events left to match
     assert pos == events_pos + min_to_match
     if pat_pos < pat.length - 1:
+        # NOTE: MAKE SURE THE LOOP VARIABLE IS INCREMENTED
         while pos < pos_limit:
             if match_sequence_here(
                 pat, pat_pos + 1, events, pos, cut_match_indices, cut_match_counts
@@ -213,12 +233,12 @@ def match_sequence_here(
                 # if the rest of the pattern matches rest of the sequence, we have a match
                 # since we already matched min_count copies of current event
                 return True
-            elif match_event(events[pos], pat_pos):  # type: ignore
+            elif match_event(pat_pos, events, pos, cut_match_indices):  # type: ignore
                 # we have some leeway to match more of the current event
                 cut_match_counts[pat_pos] += 1
                 pos += 1
             else:
-                # we can't match any further of the pattern
+                # we couldn't match any further of the pattern
                 return False
 
         # we have matched all copies of the current event, onto the next
@@ -235,8 +255,9 @@ def match_sequence_here(
             return False
     else:
         # pattern has no more events to match, so match as many of the current event as feasible
+        # NOTE: MAKE SURE THE LOOP VARIABLE IS INCREMENTED
         while pos < pos_limit:
-            if not match_event(events[pos], pat_pos):  # type: ignore
+            if not match_event(pat_pos, events, pos, cut_match_indices):  # type: ignore
                 break
             else:
                 pos += 1
