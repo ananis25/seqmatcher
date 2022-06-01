@@ -158,7 +158,7 @@ def match_pattern(pat: SeqPattern, sequences: list[Sequence]) -> list[MatchedSub
             continue
 
         pos = 0
-        start_before = 1 if pat.match_seq_start else len(pat.event_patterns)
+        start_before = 1 if pat.match_seq_start else len(seq["events"])
         while pos < start_before:
             match_indices: list[int] = []
             match_counts: list[int] = []

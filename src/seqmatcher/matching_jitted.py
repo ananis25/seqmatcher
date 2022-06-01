@@ -3,6 +3,7 @@ This module implements the matching routine, by JIT compiling the code
 for each input separately using Numba. 
 """
 
+import inspect
 from typing import Callable
 
 import numpy as np
@@ -66,25 +67,31 @@ def match_pattern(
 
     if debug_mode:
         cg.clear_cache()
+        # TODO: remove the entry from sys.modules too?
     # check if code exists as a cached file, else generate and store it
     if not cg.present_in_cache(pat.pattern_str):
         list_fns = cg.generate_match_fns(pat)
-        list_fns.append(cg.make_ast(match_sequence_here))  # type: ignore
+        # list_fns.append(cg.make_ast(match_sequence_here))  # type: ignore
 
         code_str = ""
         for _imp in (
             "import numba as nb",
             "import numpy as np",
             "import awkward as ak",
+            "from numba.typed import List",
         ):
             code_str += _imp + "\n"
         for _func in list_fns:
             code_str += "\n" + cg.ast_to_code(_func) + "\n"
+        code_str += "\n" + inspect.getsource(match_sequence_here) + "\n"
         cg.write_to_cache(pat.pattern_str, code_str)
 
     jit_mod = cg.import_from_cache(pat.pattern_str)
     res = _match_pattern(
-        pat_info, sequences, jit_mod.match_seq, jit_mod.match_sequence_here
+        pat_info,
+        sequences,
+        jit_mod.match_seq,
+        jit_mod.match_sequence_here,
     )  # type: tuple[list[np.ndarray], ...]
 
     list_match_seq_ids, list_match_indices, list_match_counts = res
@@ -103,10 +110,10 @@ def match_pattern(
     )
 
 
-@nb.jit(nopython=True)
+@nb.jit(nopython=True, locals={"pos": nb.int64, "pat_pos": nb.int64})
 def _match_pattern(
-    pat: PatternInfo,
-    sequences: ak.Array,
+    pat: "PatternInfo",
+    sequences: "ak.Array",
     match_seq: Callable[..., bool],
     match_seq_here: Callable[..., bool],
 ) -> tuple[list[np.ndarray], ...]:
@@ -125,8 +132,8 @@ def _match_pattern(
 
     def _gen_arrays():
         list_match_seq_ids.append(np.full(num_sequences, -1, dtype=np.int64))
-        list_match_indices.append(np.zeros((num_sequences, pat.length), dtype=np.int32))
-        list_match_counts.append(np.zeros((num_sequences, pat.length), dtype=np.int32))
+        list_match_indices.append(np.zeros((num_sequences, pat.length), dtype=np.int64))
+        list_match_counts.append(np.zeros((num_sequences, pat.length), dtype=np.int64))
         return (
             list_match_seq_ids[-1],
             list_match_indices[-1],
@@ -140,18 +147,21 @@ def _match_pattern(
         seq = sequences[seq_id]
 
         # filter against the sequence properties
-        if not match_seq(seq):
+        if not match_seq(seq):  # type: ignore
             continue
         events = seq["events"]  # type:ignore
         num_events = len(events)
 
+        # NOTE: this variable isn't mutated. Numba creates extra specializations, treating it as a literal in
+        # addition to int64. We just want to avoid it.
+        pat_pos = 0
         pos = 0
-        start_before = 1 if pat.match_seq_start else pat.length
+        start_before = 1 if pat.match_seq_start else num_events
         # NOTE: MAKE SURE THE LOOP VARIABLE IS INCREMENTED
         while pos < start_before:
             if match_seq_here(
                 pat,
-                0,
+                pat_pos,
                 events,
                 pos,
                 match_indices[out_idx],
@@ -191,7 +201,7 @@ def _match_pattern(
     return (list_match_seq_ids, list_match_indices, list_match_counts)  # type: ignore
 
 
-@nb.jit(nopython=True, cache=True)
+@nb.jit(nopython=True)
 def match_sequence_here(
     pat: "PatternInfo",
     pat_pos: "int",

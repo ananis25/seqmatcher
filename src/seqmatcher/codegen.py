@@ -254,7 +254,7 @@ def numba_decorator() -> ast.Call:
     return ast.Call(
         ast.Attribute(value=_load("nb"), attr="jit", ctx=ast.Load()),
         [],
-        [ast.keyword("nopython", _const(True)), ast.keyword("cache", _const(True))],
+        [ast.keyword("nopython", _const(True))],
     )
 
 
