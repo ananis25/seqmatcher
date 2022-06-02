@@ -101,8 +101,8 @@ def replace_pattern(
                 else:
                     evt = Event(_eventName="noname")
                     for _prop in repl_evt.properties:
-                        if len(_prop.value) > 0:
-                            evt[_prop.key] = _prop.value[0]
+                        if len(_prop.values) > 0:
+                            evt[_prop.key] = _prop.values[0]
                         else:
                             ref_index = _prop.value_refs[0]
                             evt[_prop.key] = seq["events"][ref_index][_prop.key]
@@ -117,7 +117,7 @@ def replace_pattern(
             if prop_name != "events":
                 new_seq[prop_name] = prop_val
         for _prop in replace_pat.properties:
-            new_seq[_prop.key] = _prop.value[0]
+            new_seq[_prop.key] = _prop.values[0]
         new_sequences.append(new_seq)
 
     return sequences
@@ -316,7 +316,7 @@ def match_event(
     for prop in pat_event.properties:
         lhs = seq_event[prop.key]
         rhs = []
-        for v in prop.value:
+        for v in prop.values:
             rhs.append(v)
         for idx in prop.value_refs:
             ref_event = seq_events[match_indices[idx]]

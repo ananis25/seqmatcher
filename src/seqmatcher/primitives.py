@@ -5,11 +5,20 @@ parsed into one of these before executing it.
 
 from dataclasses import dataclass, field, fields, is_dataclass
 from enum import Enum
-from typing import Optional, Any, Protocol, TypedDict, runtime_checkable, Iterable
+from typing import (
+    Optional,
+    Any,
+    Protocol,
+    TypedDict,
+    runtime_checkable,
+    Type,
+    Union,
+)
 
 __all__ = [
     "Operator",
     "Property",
+    "LITERAL_TYPES",
     "EvtPattern",
     "SeqPattern",
     "ReplEvtPattern",
@@ -17,7 +26,6 @@ __all__ = [
     "Rule",
     "Event",
     "Sequence",
-    "repr_dataclass",
 ]
 
 
@@ -32,6 +40,9 @@ class Operator(Enum):
     GE = ">="
 
 
+LITERAL_TYPES = Union[str, int, float, bool]
+
+
 @dataclass
 class Property:
     """Sequences or events can specify boolean conditions, called `properties` as filters.
@@ -42,7 +53,7 @@ class Property:
 
     op: "Operator"
     key: str
-    value: list[Any] = field(default_factory=list)
+    values: list[Any] = field(default_factory=list)
     value_refs: list[int] = field(default_factory=list)
 
 
@@ -59,7 +70,7 @@ class EvtPattern:
 
     custom_name: Optional[str] = None
     min_count: int = 0
-    max_count: Optional[int] = None
+    max_count: int = 0
     properties: list["Property"] = field(default_factory=list)
 
     def __repr__(self) -> str:
@@ -125,10 +136,41 @@ class SeqPattern:
     def __repr__(self) -> str:
         return repr_dataclass(self)
 
+    def type_properties(
+        self,
+        seq_prop_types: dict[str, Type[LITERAL_TYPES]],
+        evt_prop_types: dict[str, Type[LITERAL_TYPES]],
+    ) -> None:
+        """Cast the property values to match to the appropriate types based on the dataset."""
+        for prop in self.properties:
+            assert (
+                prop.key in seq_prop_types
+            ), f"property: {prop.key} not found in dataset"
+            datatyp = seq_prop_types[prop.key]
+            if not datatyp in (int, float):
+                assert prop.op in (
+                    Operator.EQ,
+                    Operator.NE,
+                ), "operator: {op} is only supported for numerical types: {prop.key}"
+            prop.values = [datatyp(v) for v in prop.values]
+
+        for evt_pat in self.event_patterns:
+            for prop in evt_pat.properties:
+                assert (
+                    prop.key in evt_prop_types
+                ), f"property: {prop.key} not found in the events records of dataset"
+                datatyp = evt_prop_types[prop.key]
+                if not datatyp in (int, float):
+                    assert prop.op in (
+                        Operator.EQ,
+                        Operator.NE,
+                    ), "operator: {op} is only supported for numerical types: {prop.key}"
+                prop.values = [datatyp(v) for v in prop.values]
+
 
 @dataclass
 class ReplSeqPattern:
-    """Specifies how to construct the subsequence to output, after matching against a `SeqPattern`"""
+    """Specifies how to construct the subsequence to output, after matching against a `SeqPattern`."""
 
     events: list[ReplEvtPattern] = field(default_factory=list)
     properties: list["Property"] = field(default_factory=list)
@@ -197,7 +239,7 @@ class RuleOr:
 
 
 # -----------------------------------------------------------
-# utility routines
+# utilities
 # -----------------------------------------------------------
 
 

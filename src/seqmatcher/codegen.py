@@ -87,7 +87,7 @@ def prop_filter_block(prop: Property, prop_idx: int) -> list[ast.stmt]:
     op = _op_dict[prop.op]
 
     cmps: list[ast.Compare] = []
-    for val in prop.value:
+    for val in prop.values:
         cmps.append(ast.Compare(_load(var), [op], [_const(val)]))
     for ref in prop.value_refs:
         val = _sub(
@@ -170,7 +170,7 @@ def seq_filter_fn(seq_pat: SeqPattern) -> ast.FunctionDef:
         var = f"value_{prop_idx}"
         op = _op_dict[prop.op]
         cmps: list[ast.Compare] = []
-        for val in prop.value:
+        for val in prop.values:
             cmps.append(ast.Compare(_load(var), [op], [_const(val)]))
 
         block.append(_assign(_store(var), _sub(_load("seq"), _load(prop.key))))
@@ -314,8 +314,14 @@ def import_from_cache(pattern_str: str) -> ModuleType:
     return importlib.import_module(f"code_cache.{cache_key}")
 
 
-def clear_cache() -> None:
+def clear_cache(key: Optional[str]) -> None:
     """Clear the code cache."""
-    shutil.rmtree(CODE_CACHE_DIR)
-    os.makedirs(CODE_CACHE_DIR, exist_ok=True)
-    pathlib.Path(os.path.join(CODE_CACHE_DIR, "__init__.py")).touch(exist_ok=True)
+    if not key:
+        for fname in os.listdir(CODE_CACHE_DIR):
+            if fname.endswith(".py") and not fname != "__init__.py":
+                os.remove(os.path.join(CODE_CACHE_DIR, fname))
+    else:
+        # remove the specified module only
+        fname = os.path.join(CODE_CACHE_DIR, f"{key}.py")
+        if os.path.exists(fname):
+            os.remove(fname)

@@ -56,11 +56,12 @@ def event():
         evt.max_count = number
     else:
         evt.min_count = number[0] if number[0] is not None else 0
-        evt.max_count = number[1]
-
-    if evt.max_count is not None:
-        assert evt.max_count >= evt.min_count
-        assert evt.max_count > 0
+        if number[1] is not None:
+            evt.max_count = number[1]
+            assert evt.max_count >= evt.min_count
+            assert evt.max_count > 0
+        else:
+            evt.max_count = 1000000  # arbitrary large integer
 
     yield p.string("(")
     # read the custom name for the event
@@ -122,13 +123,13 @@ def seq_pattern():
     if tmp is not None:
         properties: list[Property] = yield prop.sep_by(p.string(","))
         for _prop in properties:
-            assert isinstance(_prop.value, str)
+            assert isinstance(_prop.values, str)
             if _prop.key == "_match_all":
                 assert _prop.op == Operator.EQ
-                pat.match_all = True if _prop.value.lower() == "true" else False
+                pat.match_all = True if _prop.values.lower() == "true" else False
             elif _prop.key == "_allow_overlaps":
                 assert _prop.op == Operator.EQ
-                pat.allow_overlaps = True if _prop.value.lower() == "true" else False
+                pat.allow_overlaps = True if _prop.values.lower() == "true" else False
             else:
                 pat.properties.append(_prop)
         yield p.string("}}")
@@ -145,14 +146,14 @@ def parse_match_pattern(pattern_str: str) -> SeqPattern:
         if evt.custom_name is not None:
             assert evt.custom_name.startswith(
                 "@"
-            ), f"custom name for events must start with @: {evt.custom_name}"
+            ), f"custom name for events must start with `@`: {evt.custom_name}"
             assert (
                 evt.custom_name not in pat.custom_names
             ), f"duplicate assignment for custom name: {evt.custom_name}"
             pat.custom_names[evt.custom_name] = i
         for _prop in evt.properties:
             keep_vals = []
-            for _val in _prop.value:
+            for _val in _prop.values:
                 if _val.startswith("@"):
                     if _val not in pat.custom_names:
                         raise Exception(
@@ -161,7 +162,7 @@ def parse_match_pattern(pattern_str: str) -> SeqPattern:
                     _prop.value_refs.append(pat.custom_names[_val])
                 else:
                     keep_vals.append(_val)
-            _prop.value = keep_vals
+            _prop.values = keep_vals
 
     pat.pattern_str = pattern_str
     return pat
@@ -207,11 +208,11 @@ def parse_replace_pattern(
             properties = []
             for _prop in evt.properties:
                 assert (
-                    _prop.op == Operator.EQ and len(_prop.value) == 1
+                    _prop.op == Operator.EQ and len(_prop.values) == 1
                 ), "replace pattern properties only specify assignment"
 
                 new_prop = Property(op=Operator.EQ, key=_prop.key)
-                for _val in _prop.value:
+                for _val in _prop.values:
                     if _val.startswith("@"):
                         if _val not in match_pattern.custom_names:
                             raise Exception(
@@ -219,7 +220,7 @@ def parse_replace_pattern(
                             )
                         new_prop.value_refs.append(match_pattern.custom_names[_val])
                     else:
-                        new_prop.value.append(_val)
+                        new_prop.values.append(_val)
                 properties.append(new_prop)
             events.append(ReplEvtPattern(properties=properties))
 

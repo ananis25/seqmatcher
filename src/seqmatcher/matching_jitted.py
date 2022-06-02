@@ -7,13 +7,13 @@ import inspect
 import sys
 from typing import Callable
 
-import numpy as np
-import numba as nb
 import awkward as ak
+import numba as nb
+import numpy as np
 from numba.typed import List
 
-from .primitives import *
 from . import codegen as cg
+from .primitives import *
 
 
 @nb.experimental.jitclass
@@ -75,8 +75,12 @@ def match_pattern(
     )
 
     if debug_mode:
-        cg.clear_cache()
-        del sys.modules[cg.get_cache_key(pat.pattern_str)]
+        # clear file entry, unload the module, and the cached match_pattern dispatcher
+        key = cg.get_cache_key(pat.pattern_str)
+        cg.clear_cache(key)
+        mod_name = f"code_cache.{key}"
+        if mod_name in sys.modules:
+            del sys.modules[mod_name]
         _compiled_registry.clear()
 
     # check if code exists as a cached file, else generate and store it
