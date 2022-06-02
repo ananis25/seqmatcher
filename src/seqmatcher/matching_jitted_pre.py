@@ -4,7 +4,6 @@ for each input separately using Numba.
 """
 
 import inspect
-import sys
 from typing import Callable
 
 import numpy as np
@@ -51,14 +50,6 @@ class PatternInfo:
         self.allow_overlaps = allow_overlaps
 
 
-def type_getitem(typ):
-    t = typ.type.getitem_at_check(typ)(typ, nb.int64)
-    return t.return_type
-
-
-_compiled_registry = {}
-
-
 def match_pattern(
     pat: SeqPattern, sequences: ak.Array, debug_mode: bool = False
 ) -> ak.Array:
@@ -76,12 +67,11 @@ def match_pattern(
 
     if debug_mode:
         cg.clear_cache()
-        del sys.modules[cg.get_cache_key(pat.pattern_str)]
-        _compiled_registry.clear()
-
+        # TODO: remove the entry from sys.modules too?
     # check if code exists as a cached file, else generate and store it
     if not cg.present_in_cache(pat.pattern_str):
         list_fns = cg.generate_match_fns(pat)
+        # list_fns.append(cg.make_ast(match_sequence_here))  # type: ignore
 
         code_str = ""
         for _imp in (
@@ -97,34 +87,7 @@ def match_pattern(
         cg.write_to_cache(pat.pattern_str, code_str)
 
     jit_mod = cg.import_from_cache(pat.pattern_str)
-
-    typ_seq_item = type_getitem(nb.typeof(sequences))
-    typ_events_item = type_getitem(nb.typeof(sequences["events"]))
-    typ_np_array = nb.typeof(np.zeros(5, np.int64))
-    typ_inputs = (
-        nb.typeof(pat_info),
-        nb.typeof(sequences),
-        nb.types.FunctionType(nb.bool_(typ_seq_item)),
-        nb.types.FunctionType(
-            nb.bool_(
-                nb.typeof(pat_info),
-                nb.int64,
-                typ_events_item,
-                nb.int64,
-                typ_np_array,
-                typ_np_array,
-            )
-        ),
-    )
-    if typ_inputs in _compiled_registry:
-        fn = _compiled_registry[typ_inputs]
-    else:
-        fn = nb.jit(
-            typ_inputs, nopython=True, locals={"pos": nb.int64, "pat_pos": nb.int64}
-        )(_match_pattern)
-        _compiled_registry[typ_inputs] = fn
-
-    res = fn(
+    res = _match_pattern(
         pat_info,
         sequences,
         jit_mod.match_seq,
@@ -147,6 +110,7 @@ def match_pattern(
     )
 
 
+@nb.jit(nopython=True, locals={"pos": nb.int64, "pat_pos": nb.int64})
 def _match_pattern(
     pat: "PatternInfo",
     sequences: "ak.Array",
