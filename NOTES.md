@@ -1,0 +1,1 @@
+* Inside the numba routines, None checks are often replaced with checking if the number is greater than or equal to 0. VERIFY THOSE! 

@@ -110,7 +110,7 @@ def seq_pattern():
         elif tok == "$":
             if pat.idx_end_event is not None:
                 raise Exception("multiple end event markers in the pattern")
-            pat.idx_end_event = len(pat.event_patterns) - 1
+            pat.idx_end_event = len(pat.event_patterns)
         else:
             pat.event_patterns.append(tok)
 
@@ -123,13 +123,16 @@ def seq_pattern():
     if tmp is not None:
         properties: list[Property] = yield prop.sep_by(p.string(","))
         for _prop in properties:
-            assert isinstance(_prop.values, str)
+            for _val in _prop.values:
+                assert isinstance(_val, str)
             if _prop.key == "_match_all":
                 assert _prop.op == Operator.EQ
-                pat.match_all = True if _prop.values.lower() == "true" else False
+                pat.match_all = True if _prop.values[0].lower() == "true" else False
             elif _prop.key == "_allow_overlaps":
                 assert _prop.op == Operator.EQ
-                pat.allow_overlaps = True if _prop.values.lower() == "true" else False
+                pat.allow_overlaps = (
+                    True if _prop.values[0].lower() == "true" else False
+                )
             else:
                 pat.properties.append(_prop)
         yield p.string("}}")
@@ -139,6 +142,7 @@ def seq_pattern():
 
 def parse_match_pattern(pattern_str: str) -> SeqPattern:
     """Parse a sequence pattern string into a SeqPattern object."""
+    pattern_str = pattern_str.replace(" ", "")
     pat: SeqPattern = seq_pattern.parse(pattern_str)
 
     # fill in the cross references made across events
@@ -172,6 +176,7 @@ def parse_replace_pattern(
     repl_pattern_str: str, match_pattern: SeqPattern
 ) -> ReplSeqPattern:
     """Parse a replace pattern string into a ReplacePattern object."""
+    repl_pattern_str = repl_pattern_str.replace(" ", "")
     repl_pattern: SeqPattern = seq_pattern.parse(repl_pattern_str)
 
     events: list[ReplEvtPattern] = []

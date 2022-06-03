@@ -5,15 +5,23 @@ for each input separately using Numba.
 
 import inspect
 import sys
-from typing import Callable
+from typing import Callable, Union
 
 import awkward as ak
 import numba as nb
 import numpy as np
 from numba.typed import List
+import awkward.layout as ak_layout
 
 from . import codegen as cg
 from .primitives import *
+
+__all__ = ["match_pattern", "extract_pattern"]
+
+
+# -----------------------------------------------------------
+# matching sequences using the given pattern
+# -----------------------------------------------------------
 
 
 @nb.experimental.jitclass
@@ -62,6 +70,9 @@ _compiled_registry = {}
 def match_pattern(
     pat: SeqPattern, sequences: ak.Array, debug_mode: bool = False
 ) -> ak.Array:
+    """Wrapper that jit compiles numba functions to match the given pattern, and returns a list of
+    identifiers for the matched sequences.
+    """
     pat_info = PatternInfo(
         len(pat.event_patterns),
         pat.idx_start_event if pat.idx_start_event else -1,
@@ -141,13 +152,17 @@ def match_pattern(
     match_counts = np.concatenate(list_match_counts)
 
     # filter down to legit matches
-    valid_indices = match_seq_ids > 0
+    valid_indices = match_seq_ids >= 0
     match_seq_ids = match_seq_ids[valid_indices]
     match_indices = match_indices[valid_indices]
     match_counts = match_counts[valid_indices]
 
     return ak.Array(
-        {"seq_id": match_seq_ids, "indices": match_indices, "counts": match_counts}
+        {
+            "seq_id": match_seq_ids,
+            "evt_indices": match_indices,
+            "evt_counts": match_counts,
+        }
     )
 
 
@@ -189,6 +204,7 @@ def _match_pattern(
         # filter against the sequence properties
         if not match_seq(seq):  # type: ignore
             continue
+
         events = seq["events"]  # type:ignore
         num_events = len(events)
 
@@ -210,7 +226,7 @@ def _match_pattern(
                 if pat.allow_overlaps:
                     # start matching from the next event in the sequence
                     pos += 1
-                elif pat.idx_end > 0:
+                elif pat.idx_end >= 0:
                     # start matching after the current match ends
                     pos = (
                         match_indices[out_idx][pat.idx_end]
@@ -318,3 +334,73 @@ def match_sequence_here(
             return False
         else:
             return True
+
+
+# -----------------------------------------------------------
+# matching sequences and extracting the matched subsequences
+# -----------------------------------------------------------
+
+
+def get_full_offsets_n_records(content: ak_layout.Content):
+    """Events is an array with layout as a list-type content, or the same
+    thing wrapped under one or more IndexedArray or UnmaskedArray.
+    """
+    from awkward._util import listtypes
+
+    if not isinstance(content, listtypes):
+        return get_full_offsets_n_records(content.content)
+    else:
+        if isinstance(content, ak_layout.RegularArray):
+            starts = np.arange(0, len(content.content), content.size)
+            return (starts, starts + content.size, content.content)
+        else:
+            return (
+                np.asarray(content.starts),
+                np.asarray(content.stops),
+                content.content,
+            )
+
+
+def extract_pattern(pat: SeqPattern, sequences: ak.Array) -> ak.Array:
+    """Extract the pattern from the sequences to yield new sequences."""
+
+    match_res = match_pattern(pat, sequences)
+    select_indices = match_res["seq_id"]
+
+    matched_sequences: ak.Array = sequences[select_indices]  # type: ignore
+    matched_events: ak.Array = matched_sequences["events"]  # type: ignore
+
+    # we still need to subset the events for each sequence
+    events_length = ak.num(matched_events)
+    start_at = (
+        ak.zeros_like(events_length)
+        if pat.idx_start_event is None
+        else match_res["evt_indices"][:, pat.idx_start_event]  # type: ignore
+    )
+    end_excl_at = (
+        events_length
+        if pat.idx_end_event is None
+        else match_res["evt_indices"][:, pat.idx_end_event]  # type: ignore
+        + match_res["evt_counts"][:, pat.idx_end_event]  # type: ignore
+    )
+
+    # the original events array is a ListOffsetArray or ListArray, so pull out the offsets off it
+    full_starts, full_ends, full_content = get_full_offsets_n_records(
+        matched_events.layout
+    )
+    select_starts = full_starts[select_indices] + start_at
+    select_ends = full_starts[select_indices] + end_excl_at
+    assert np.all(
+        select_ends <= full_ends[select_indices]
+    ), "shame, your math is incorrect"
+    subset_matched_events = ak.Array(
+        ak_layout.ListArray64(
+            ak_layout.Index64(select_starts),
+            ak_layout.Index64(select_ends),
+            full_content,
+        )
+    )
+    assert ak.is_valid(subset_matched_events)
+    matched_sequences["events"] = subset_matched_events
+
+    return matched_sequences

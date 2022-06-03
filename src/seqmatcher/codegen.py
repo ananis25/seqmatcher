@@ -173,7 +173,7 @@ def seq_filter_fn(seq_pat: SeqPattern) -> ast.FunctionDef:
         for val in prop.values:
             cmps.append(ast.Compare(_load(var), [op], [_const(val)]))
 
-        block.append(_assign(_store(var), _sub(_load("seq"), _load(prop.key))))
+        block.append(_assign(_store(var), _sub(_load("seq"), _const(prop.key))))
         block.append(
             ast.If(
                 ast.Compare(_load(var), [ast.Is()], [_const(None)]),
@@ -182,7 +182,11 @@ def seq_filter_fn(seq_pat: SeqPattern) -> ast.FunctionDef:
             )
         )
         block.append(
-            ast.If(ast.BoolOp(ast.Or(), cmps), [ast.Return(_const(False))], [])
+            ast.If(
+                ast.UnaryOp(ast.Not(), ast.BoolOp(ast.Or(), cmps)),
+                [ast.Return(_const(False))],
+                [],
+            )
         )
     block.append(ast.Return(_const(True)))
 
@@ -233,12 +237,17 @@ def generate_match_fns(seq_pat: SeqPattern) -> list[ast.FunctionDef]:
 
     dispatch_name = "match_event"
     dispatch_args = _args(["pat_idx", "events", "i", "match_indices"])
-    _block: Optional[ast.If] = None
-    for branch in reversed(list_branches):
-        if _block is not None:
-            branch.orelse.append(_block)
-        _block = branch
-    dispatch_body = [_block, ast.Return(_const(True))]
+
+    dispatch_body: list[ast.stmt] = []
+    if len(list_branches) > 0:
+        _block: Optional[ast.If] = None
+        for branch in reversed(list_branches):
+            if _block is not None:
+                branch.orelse.append(_block)
+            _block = branch
+        dispatch_body = [_block]  # type: ignore
+
+    dispatch_body.append(ast.Return(_const(True)))
     dispatch_fn = ast.FunctionDef(
         dispatch_name,
         dispatch_args,

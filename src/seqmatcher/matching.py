@@ -2,8 +2,11 @@
 This module implements the matching routine. 
 """
 import numpy as np
-from typing import Union, Any, Optional, TypedDict, Iterable
+from typing import Union, Any, Optional, TypedDict
 from .primitives import *
+
+
+__all__ = ["match_pattern", "replace_pattern", "extract_pattern"]
 
 
 class MatchedSubSeq(TypedDict):
