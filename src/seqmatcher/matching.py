@@ -75,7 +75,7 @@ def replace_pattern(
         if len(matched_subseqs) == 0:
             continue
 
-        # for all the subsequences matched in the same sequence, we produce a single sequence after patching the
+        # for each subsequence matched in the same sequence, we produce a single sequence after patching the
         # matched events. So, if the original sequence had events 0-8, with a match between 3-7, the extracted
         # subsequence would be: 0-2, 3-7 (patched with the replacement pattern), 8.
         pos = 0
