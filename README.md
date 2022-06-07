@@ -12,12 +12,12 @@ The original notebooks introduce the semantics for the regex-like syntax and imp
 * compile the pattern matching routines at runtime using the `numba` [library](https://numba.pydata.org/) and run it against the awkward array data. 
 
 Performance wins:
-* Numba compiles using LLVM, so matching is pretty quick. 
-* Awkward arrays are immutable and store all attributes, including nested ones, in contiguous buffers. So, matching and extracting subsequences copies very little data, and just records slices of the original arrays to use as output. 
+* Numba implements bindings to LLVM, so the compiled code runs pretty quick. 
+* Awkward arrays are immutable and store all attributes, including nested ones, in contiguous buffers. So, matching and extracting subsequences copies very little data, and just record slices of the original arrays to use as output. 
 
 Things that are tricky:
 * Numba requires static variable types for compilation, so that constrains us to a consistent schema across all sequences and events. 
-* A columnar data layout also makes modifying the matched sequences tricky (TODO: in jitted code). 
+* A columnar data layout also makes modifying the matched sequences tricky (TODO: still gotta implement it in jitted code). 
 
 
 ## Installation

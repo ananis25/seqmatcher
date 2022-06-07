@@ -1,0 +1,1 @@
+This folder hosts more explorations around analyzing sequences of events. 
