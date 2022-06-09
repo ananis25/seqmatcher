@@ -6,6 +6,9 @@
 # C extensions
 *.so
 
+# temp folder apparently created by duckdb?
+**/.tmp/
+
 # Distribution / packaging
 .Python
 build/
