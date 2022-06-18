@@ -2,9 +2,12 @@
 This module parses the input string into a match/replace instruction. 
 """
 
+from typing import Optional
 import parsy as p
+import re
 
 from .primitives import *
+from .codegen import vet_custom_code, rewrite_custom_code
 
 
 def generate(name: str):
@@ -140,7 +143,7 @@ def seq_pattern():
     return pat
 
 
-def parse_match_pattern(pattern_str: str) -> SeqPattern:
+def parse_match_pattern(pattern_str: str, code_str: Optional[str] = None) -> SeqPattern:
     """Parse a sequence pattern string into a SeqPattern object."""
     pattern_str = pattern_str.replace(" ", "")
     pat: SeqPattern = seq_pattern.parse(pattern_str)
@@ -169,6 +172,29 @@ def parse_match_pattern(pattern_str: str) -> SeqPattern:
             _prop.values = keep_vals
 
     pat.pattern_str = pattern_str
+
+    # if the code string is provided, vet it and resolve the custom name references
+    if code_str is None:
+        return pat
+
+    code_str = code_str.strip()
+    re_pat = r"(@[\w]+)\[(\d+)\]"
+    custom_refs = re.findall(re_pat, code_str)
+
+    lines = []  # sub custom event references with aliases
+    for i, (name, offset) in enumerate(set(custom_refs)):
+        assert name in pat.custom_names, "Undefined reference found in code"
+        ref_idx = pat.custom_names[name]
+        ref_offset = int(offset)
+        lines.append(
+            f'val_{i} = seq["events"][match_indices[{ref_idx}] + {ref_offset}]'
+        )
+        code_str = code_str.replace(f"{name}[{offset}]", f"val_{i}")
+
+    vet_custom_code(code_str)
+    code_str = rewrite_custom_code(code_str)
+    pat.code = "\n".join([*lines, f"return {code_str}"])
+
     return pat
 
 

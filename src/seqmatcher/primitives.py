@@ -132,6 +132,7 @@ class SeqPattern:
     custom_names: dict[str, int] = field(default_factory=dict)
     event_patterns: list[EvtPattern] = field(default_factory=list)
     properties: list["Property"] = field(default_factory=list)
+    code: Optional[str] = None
 
     def __repr__(self) -> str:
         return repr_dataclass(self)

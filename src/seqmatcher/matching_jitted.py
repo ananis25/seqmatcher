@@ -106,8 +106,10 @@ def match_pattern(
             "from numba.typed import List",
         ):
             code_str += _imp + "\n"
+
         for _func in list_fns:
             code_str += "\n" + cg.ast_to_code(_func) + "\n"
+        code_str += "\n" + cg.seq_post_filter_fn(pat) + "\n"
         code_str += "\n" + inspect.getsource(match_sequence_here) + "\n"
         cg.write_to_cache(pat.pattern_str, code_str)
 
@@ -120,6 +122,7 @@ def match_pattern(
         nb.typeof(pat_info),
         nb.typeof(sequences),
         nb.types.FunctionType(nb.bool_(typ_seq_item)),
+        nb.types.FunctionType(nb.bool_(typ_seq_item, typ_np_array)),
         nb.types.FunctionType(
             nb.bool_(
                 nb.typeof(pat_info),
@@ -142,7 +145,8 @@ def match_pattern(
     res = fn(
         pat_info,
         sequences,
-        jit_mod.match_seq,
+        jit_mod.match_seq_pre,
+        jit_mod.match_seq_post,
         jit_mod.match_sequence_here,
     )  # type: tuple[list[np.ndarray], ...]
 
@@ -169,10 +173,16 @@ def match_pattern(
 def _match_pattern(
     pat: "PatternInfo",
     sequences: "ak.Array",
-    match_seq: Callable[..., bool],
+    match_seq_pre: Callable[..., bool],
+    match_seq_post: Callable[..., bool],
     match_seq_here: Callable[..., bool],
 ) -> tuple[list[np.ndarray], ...]:
-    """Match the pattern against the sequences"""
+    """Match the pattern against the sequences.
+
+    NOTE: This routine is jit compiled with Numba. We handle jitting it manually by specifying the
+    inputs, since Numba produces two specializations otherwise - one where the input list of sequences
+    is nullable. I am not sure why.
+    """
     num_sequences = len(sequences)
 
     # List of numpy arrays to output.
@@ -202,7 +212,7 @@ def _match_pattern(
         seq = sequences[seq_id]
 
         # filter against the sequence properties
-        if not match_seq(seq):  # type: ignore
+        if not match_seq_pre(seq):  # type: ignore
             continue
 
         events = seq["events"]  # type:ignore
@@ -215,13 +225,16 @@ def _match_pattern(
         start_before = 1 if pat.match_seq_start else num_events
         # NOTE: MAKE SURE THE LOOP VARIABLE IS INCREMENTED
         while pos < start_before:
-            if match_seq_here(
-                pat,
-                pat_pos,
-                events,
-                pos,
-                match_indices[out_idx],
-                match_counts[out_idx],
+            if (
+                match_seq_here(
+                    pat,
+                    pat_pos,
+                    events,
+                    pos,
+                    match_indices[out_idx],
+                    match_counts[out_idx],
+                )
+                and match_seq_post(seq, match_indices[out_idx])
             ):
                 if pat.allow_overlaps:
                     # start matching from the next event in the sequence
@@ -266,7 +279,11 @@ def match_sequence_here(
     cut_match_indices: "np.ndarray",
     cut_match_counts: "np.ndarray",
 ) -> "bool":
-    """Match the events in the sequence starting at the given position of the pattern"""
+    """Match the events in the sequence starting at the given position of the pattern.
+
+    NOTE: This routine is put into the generated file for matching a sepcific pattern,
+    and then jit compiled.
+    """
 
     min_to_match = pat.event_min_counts[pat_pos]
     max_to_match = pat.event_max_counts[pat_pos]

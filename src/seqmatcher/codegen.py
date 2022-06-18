@@ -124,7 +124,7 @@ def event_filter_fn(evt_pat: EvtPattern, pat_idx: int) -> ast.FunctionDef:
     Something like:
 
     ```py
-    def match_i(events, evt_idx):
+    def match_{i}(events, evt_idx, match_indices):
         # {if prop1 is False, return a False value early}
         # {if prop2 is False, return a False value early}
         ...
@@ -149,9 +149,11 @@ def event_filter_fn(evt_pat: EvtPattern, pat_idx: int) -> ast.FunctionDef:
     )
 
 
-def seq_filter_fn(seq_pat: SeqPattern) -> ast.FunctionDef:
+def seq_pre_filter_fn(seq_pat: SeqPattern) -> ast.FunctionDef:
     """Generate the statement to filter out sequences that don't satisfy the properties
-    specified.
+    specified. This is evaluated for a sequence before we start matching subsequences
+    of it against the event patterns.
+
     ```py
     def match_seq(seq):
         value_1 = seq["team"]
@@ -190,7 +192,7 @@ def seq_filter_fn(seq_pat: SeqPattern) -> ast.FunctionDef:
         )
     block.append(ast.Return(_const(True)))
 
-    fn_name = "match_seq"
+    fn_name = "match_seq_pre"
     fn_args = _args(["seq"])
     return ast.FunctionDef(
         fn_name,
@@ -201,12 +203,25 @@ def seq_filter_fn(seq_pat: SeqPattern) -> ast.FunctionDef:
     )
 
 
+def seq_post_filter_fn(seq_pat: SeqPattern) -> str:
+    """Generate the statement to filter out sequences that don't evaluate to True for
+    the specified custom code expression. This is evaluated _separately_ for each matched
+    subsequence.
+    """
+    fn_decl = "def match_seq_post(seq, match_indices):"
+    if seq_pat.code is None:
+        return "\n".join([fn_decl, "    return True"])
+    else:
+        stmts = seq_pat.code.split("\n")
+        return "\n".join([fn_decl, *(f"    {stmt}" for stmt in stmts)])
+
+
 def generate_match_fns(seq_pat: SeqPattern) -> list[ast.FunctionDef]:
     """Generate the statement to filter out events that don't satisfy the pattern.
     Something like:
 
     ```py
-    def match_seq(seq):
+    def match_seq_pre(seq):
         ...
 
     def match_event(pat_idx, events, i, match_indices):
@@ -224,18 +239,18 @@ def generate_match_fns(seq_pat: SeqPattern) -> list[ast.FunctionDef]:
         ...
     ```
     """
-    list_fns: list[ast.FunctionDef] = []
+    list_evt_match_fns: list[ast.FunctionDef] = []
     for pat_idx, evt_pat in enumerate(seq_pat.event_patterns):
-        list_fns.append(event_filter_fn(evt_pat, pat_idx))
+        list_evt_match_fns.append(event_filter_fn(evt_pat, pat_idx))
 
     list_branches: list[ast.If] = []
     args = [_load("events"), _load("i"), _load("match_indices")]
-    for pat_idx, fn in enumerate(list_fns):
+    for pat_idx, fn in enumerate(list_evt_match_fns):
         body = ast.Return(ast.Call(_load(fn.name), args, []))
         cmp = ast.Compare(_load("pat_idx"), [ast.Eq()], [_const(pat_idx)])
         list_branches.append(ast.If(cmp, [body], []))
 
-    dispatch_name = "match_event"
+    evt_match_dispatch_name = "match_event"
     dispatch_args = _args(["pat_idx", "events", "i", "match_indices"])
 
     dispatch_body: list[ast.stmt] = []
@@ -248,15 +263,15 @@ def generate_match_fns(seq_pat: SeqPattern) -> list[ast.FunctionDef]:
         dispatch_body = [_block]  # type: ignore
 
     dispatch_body.append(ast.Return(_const(True)))
-    dispatch_fn = ast.FunctionDef(
-        dispatch_name,
+    evt_match_dispatch_fn = ast.FunctionDef(
+        evt_match_dispatch_name,
         dispatch_args,
         dispatch_body,
         [numba_decorator()],
         [],
     )
 
-    return [seq_filter_fn(seq_pat), dispatch_fn] + list_fns
+    return [seq_pre_filter_fn(seq_pat), evt_match_dispatch_fn] + list_evt_match_fns
 
 
 def numba_decorator() -> ast.Call:
@@ -265,6 +280,87 @@ def numba_decorator() -> ast.Call:
         [],
         [ast.keyword("nopython", _const(True))],
     )
+
+
+# -----------------------------------------------------------
+# Vet and edit custom code property
+# -----------------------------------------------------------
+
+
+def vet_custom_code(code: str) -> None:
+    """Vet the code to make sure it is valid."""
+    tree = ast.parse(code)
+
+    # refer - https://greentreesnakes.readthedocs.io/en/latest/nodes.html
+    _ALLOWED_NODE_TYPES = (
+        ast.Constant,
+        ast.Num,
+        ast.Str,
+        ast.NameConstant,  # True, False, None
+        ast.Name,
+        ast.Load,
+        ast.Store,
+        ast.UnaryOp,
+        ast.Not,
+        ast.BinOp,
+        ast.Add,
+        ast.Sub,
+        ast.Mult,
+        ast.Div,
+        ast.BoolOp,
+        ast.And,
+        ast.Or,
+        ast.Compare,
+        ast.Eq,
+        ast.NotEq,
+        ast.Gt,
+        ast.GtE,
+        ast.Lt,
+        ast.LtE,
+        ast.IfExp,
+        ast.Attribute,
+    )
+    _ALLOWED_FUNCS = ["max", "min"]
+
+    assert len(tree.body) == 1 and isinstance(
+        tree.body[0], ast.Expr
+    ), "code property can only be a single expression"
+
+    # recurse on the expression and assert there are no unwanted constructs
+    for node in ast.walk(tree.body[0].value):
+        if isinstance(node, ast.Call):
+            assert (
+                isinstance(node.func, ast.Name) and node.func.id in _ALLOWED_FUNCS
+            ), "function call in input code isn't supported"
+        elif isinstance(node, ast.Attribute):
+            assert isinstance(node.value, ast.Name), "invalid attribute access"
+        elif isinstance(node, ast.Name):
+            assert isinstance(node.id, str) and (
+                node.id.startswith("val_") or node.id == "seq" or node.id == "length"
+            ), "invalid identifier"
+        else:
+            assert isinstance(
+                node, _ALLOWED_NODE_TYPES
+            ), f"ast node of unsupported type encountered: {type(node)}"
+
+
+class RewriteCode(ast.NodeTransformer):
+    def visit_Attribute(self, node):
+        return ast.Subscript(value=node.value, slice=_const(node.attr), ctx=node.ctx)
+
+    def visit_Name(self, node):
+        if node.id == "length":
+            return ast.Call(
+                func=_load("len"),
+                args=[ast.Subscript(value=_load("seq"), slice=_const("events"))],
+                keywords=[],
+            )
+
+
+def rewrite_custom_code(code: str) -> str:
+    tree = ast.parse(code)
+    new_tree = RewriteCode().visit(tree)
+    return ast_to_code(new_tree)
 
 
 # -----------------------------------------------------------
@@ -277,7 +373,6 @@ import importlib
 import os
 import pathlib
 import platform
-import shutil
 import sys
 import tempfile
 
