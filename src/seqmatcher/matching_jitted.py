@@ -67,9 +67,7 @@ def type_getitem(typ):
 _compiled_registry = {}
 
 
-def match_pattern(
-    pat: SeqPattern, sequences: ak.Array, debug_mode: bool = False
-) -> ak.Array:
+def match_pattern(pat: SeqPattern, sequences: ak.Array) -> ak.Array:
     """Wrapper that jit compiles numba functions to match the given pattern, and returns a list of
     identifiers for the matched sequences.
     """
@@ -85,17 +83,9 @@ def match_pattern(
         pat.allow_overlaps,
     )
 
-    if debug_mode:
-        # clear file entry, unload the module, and the cached match_pattern dispatcher
-        key = cg.get_cache_key(pat.pattern_str)
-        cg.clear_cache(key)
-        mod_name = f"code_cache.{key}"
-        if mod_name in sys.modules:
-            del sys.modules[mod_name]
-        _compiled_registry.clear()
-
+    cache_id = pat.pattern_str + (pat.code if pat.code is not None else "")
     # check if code exists as a cached file, else generate and store it
-    if not cg.present_in_cache(pat.pattern_str):
+    if not cg.present_in_cache(cache_id):
         list_fns = cg.generate_match_fns(pat)
 
         code_str = ""
@@ -111,9 +101,9 @@ def match_pattern(
             code_str += "\n" + cg.ast_to_code(_func) + "\n"
         code_str += "\n" + cg.seq_post_filter_fn(pat) + "\n"
         code_str += "\n" + inspect.getsource(match_sequence_here) + "\n"
-        cg.write_to_cache(pat.pattern_str, code_str)
+        cg.write_to_cache(cache_id, code_str)
 
-    jit_mod = cg.import_from_cache(pat.pattern_str)
+    jit_mod = cg.import_from_cache(cache_id)
 
     typ_seq_item = type_getitem(nb.typeof(sequences))
     typ_events_item = type_getitem(nb.typeof(sequences["events"]))

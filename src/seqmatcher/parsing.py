@@ -178,23 +178,34 @@ def parse_match_pattern(pattern_str: str, code_str: Optional[str] = None) -> Seq
         return pat
 
     code_str = code_str.strip()
-    re_pat = r"(@[\w]+)\[(\d+)\]"
-    custom_refs = re.findall(re_pat, code_str)
+    # sub custom event references with aliases and replace attribute access with subscripting
+    re_pat = r"(@\w+)(\[\d+\])?.(\w+)"
+    custom_refs: list[tuple[str, str, str]] = re.findall(re_pat, code_str)
 
-    lines = []  # sub custom event references with aliases
-    for i, (name, offset) in enumerate(set(custom_refs)):
+    lines = []  # add variable declarations and null checks
+    for i, (name, offset, attr) in enumerate(set(custom_refs)):
         assert name in pat.custom_names, "Undefined reference found in code"
         ref_idx = pat.custom_names[name]
-        ref_offset = int(offset)
-        lines.append(
-            f'val_{i} = seq["events"][match_indices[{ref_idx}] + {ref_offset}]'
-        )
-        code_str = code_str.replace(f"{name}[{offset}]", f"val_{i}")
+        evt_index = f"match_indices[{ref_idx}]"
+        if offset != "":
+            ref_offset = int(offset[1:-1])
+            evt_index = f"{evt_index} + {ref_offset}"
+        lines.append(f'val_{i} = seq["events"][{evt_index}]["{attr}"]')
+
+        code_str = code_str.replace(f"{name}{offset}.{attr}", f"val_{i}")
+        lines.append(f"if val_{i} is None: return False")
+
+    # replace sequence properties access with subscripting too
+    seq_refs = re.findall(r"seq.(\w+)", code_str)
+    for attr in set(seq_refs):
+        old_var = f"seq.{attr}"
+        new_var = f'seq["{attr}"]'
+        code_str = code_str.replace(old_var, new_var)
+        lines.append(f"if {new_var} is None: return False")
 
     vet_custom_code(code_str)
     code_str = rewrite_custom_code(code_str)
     pat.code = "\n".join([*lines, f"return {code_str}"])
-
     return pat
 
 

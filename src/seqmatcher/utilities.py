@@ -21,7 +21,9 @@ def arrow_type_to_py(arrow_typ) -> Union[LITERAL_TYPES, None]:
     return typ  # type: ignore
 
 
-def get_types_from_dataset(dataset):
+def get_types_from_dataset(
+    dataset,
+) -> tuple[dict[str, LITERAL_TYPES], dict[str, LITERAL_TYPES]]:
     """Read the schema of an Arrow dataset to determine the types of the columns."""
     seq_type_map = dict()
     events_type_map = dict()

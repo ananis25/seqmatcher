@@ -208,12 +208,17 @@ def seq_post_filter_fn(seq_pat: SeqPattern) -> str:
     the specified custom code expression. This is evaluated _separately_ for each matched
     subsequence.
     """
+    fn_decorator = "@nb.jit(nopython=True)"
     fn_decl = "def match_seq_post(seq, match_indices):"
+
+    stmts: list[str] = []
     if seq_pat.code is None:
-        return "\n".join([fn_decl, "    return True"])
+        stmts.append(" " * 4 + "return True")
     else:
-        stmts = seq_pat.code.split("\n")
-        return "\n".join([fn_decl, *(f"    {stmt}" for stmt in stmts)])
+        for stmt in seq_pat.code.split("\n"):
+            stmts.append(" " * 4 + stmt)
+
+    return "\n".join([fn_decorator, fn_decl, *stmts])
 
 
 def generate_match_fns(seq_pat: SeqPattern) -> list[ast.FunctionDef]:
@@ -317,8 +322,13 @@ def vet_custom_code(code: str) -> None:
         ast.GtE,
         ast.Lt,
         ast.LtE,
+        ast.In,
+        ast.NotIn,
+        ast.Is,
+        ast.IsNot,
         ast.IfExp,
-        ast.Attribute,
+        ast.Subscript,
+        ast.Tuple,
     )
     _ALLOWED_FUNCS = ["max", "min"]
 
@@ -332,8 +342,6 @@ def vet_custom_code(code: str) -> None:
             assert (
                 isinstance(node.func, ast.Name) and node.func.id in _ALLOWED_FUNCS
             ), "function call in input code isn't supported"
-        elif isinstance(node, ast.Attribute):
-            assert isinstance(node.value, ast.Name), "invalid attribute access"
         elif isinstance(node, ast.Name):
             assert isinstance(node.id, str) and (
                 node.id.startswith("val_") or node.id == "seq" or node.id == "length"
@@ -345,9 +353,6 @@ def vet_custom_code(code: str) -> None:
 
 
 class RewriteCode(ast.NodeTransformer):
-    def visit_Attribute(self, node):
-        return ast.Subscript(value=node.value, slice=_const(node.attr), ctx=node.ctx)
-
     def visit_Name(self, node):
         if node.id == "length":
             return ast.Call(
@@ -355,6 +360,8 @@ class RewriteCode(ast.NodeTransformer):
                 args=[ast.Subscript(value=_load("seq"), slice=_const("events"))],
                 keywords=[],
             )
+        else:
+            return node
 
 
 def rewrite_custom_code(code: str) -> str:
@@ -371,7 +378,6 @@ def rewrite_custom_code(code: str) -> str:
 import hashlib
 import importlib
 import os
-import pathlib
 import platform
 import sys
 import tempfile
@@ -385,7 +391,6 @@ sys.path.append(CACHE_DIR)
 CODE_CACHE_DIR = os.path.join(CACHE_DIR, "code_cache")
 if not os.path.exists(CODE_CACHE_DIR):
     os.makedirs(CODE_CACHE_DIR, exist_ok=True)
-    pathlib.Path(os.path.join(CODE_CACHE_DIR, "__init__.py")).touch(exist_ok=True)
 
 JIT_CACHE_DIR = os.path.join(CACHE_DIR, "jit_cache")
 if not os.path.exists(JIT_CACHE_DIR):
@@ -418,11 +423,11 @@ def import_from_cache(pattern_str: str) -> ModuleType:
     return importlib.import_module(f"code_cache.{cache_key}")
 
 
-def clear_cache(key: Optional[str]) -> None:
+def clear_cache(key: Optional[str] = None) -> None:
     """Clear the code cache."""
     if not key:
         for fname in os.listdir(CODE_CACHE_DIR):
-            if fname.endswith(".py") and not fname != "__init__.py":
+            if fname.endswith(".py"):
                 os.remove(os.path.join(CODE_CACHE_DIR, fname))
     else:
         # remove the specified module only
