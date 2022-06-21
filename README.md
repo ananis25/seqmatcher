@@ -28,7 +28,7 @@ Install this library using `pip`:
 
 ## Usage
 
-Usage instructions go here.
+Please refer to the example [notebook](examples/pattern_matching.ipynb) on how to specify and match patterns. 
 
 ## Development
 
